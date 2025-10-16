@@ -3,6 +3,7 @@ import re
 import os
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import json
 
 
 class CodeforcesGroupSpider(scrapy.Spider):
@@ -10,10 +11,17 @@ class CodeforcesGroupSpider(scrapy.Spider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # This assumes config is loaded in __init__.py and assigned to spider instance
-        # If not, it needs to be loaded here or passed in during spider creation
-        # For now, relying on the __init__.py to set these
-        pass
+
+        # đọc file config.json
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        self.username = config["username"]
+        self.password = config["password"]
+        self.group_id = config["group_id"]
+
+        self.login_url = "https://codeforces.com/enter"
 
     def start_requests(self):
         yield scrapy.Request(self.login_url, callback=self.login, dont_filter=True)

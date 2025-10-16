@@ -8,21 +8,15 @@ from urllib.parse import urljoin
 class CodeforcesGroupSpider(scrapy.Spider):
     name = "codeforces_group"
 
-    def __init__(self, username, password, group_id, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.username = username
-        self.password = password
-        self.group_id = group_id
-        self.login_url = "https://codeforces.com/enter"
-        self.start_urls = [f"https://codeforces.com/group/{group_id}/contests"]
+        # This assumes config is loaded in __init__.py and assigned to spider instance
+        # If not, it needs to be loaded here or passed in during spider creation
+        # For now, relying on the __init__.py to set these
+        pass
 
-    def parse(self, response):
-        """Đăng nhập trước khi crawl"""
-        csrf_token = response.xpath('//meta[@name="X-Csrf-Token"]/@content').get()
-        if csrf_token is None:
-            yield scrapy.Request(self.login_url, callback=self.login)
-        else:
-            yield scrapy.Request(self.login_url, callback=self.login)
+    def start_requests(self):
+        yield scrapy.Request(self.login_url, callback=self.login, dont_filter=True)
 
     def login(self, response):
         csrf_token = response.xpath('//meta[@name="X-Csrf-Token"]/@content').get()
@@ -47,15 +41,26 @@ class CodeforcesGroupSpider(scrapy.Spider):
 
     def parse_contests(self, response):
         """Lấy danh sách contest trong group"""
-        for contest in response.css(".contests-table tr"):
-            link = contest.css("a::attr(href)").get()
-            name = contest.css("a::text").get()
-            if link and name:
-                contest_url = urljoin(response.url, link)
+        for row in response.css(".contests-table tr"):
+            link_el = row.css("a::attr(href)").get()
+            name_el = row.css("a::text").get()
+
+            if link_el and name_el:
+                contest_name = name_el.strip()
+                contest_url = urljoin(response.url, link_el)
+
+                group_folder = f"output/{self.group_id}"
+                contest_folder = os.path.join(group_folder, contest_name)
+
+                if os.path.exists(contest_folder):
+                    self.logger.info(f"⏭️ Skipping already crawled contest: {contest_name}")
+                    continue
+
+                self.logger.info(f"✨ Crawling new contest: {contest_name}")
                 yield scrapy.Request(
                     contest_url,
                     callback=self.parse_contest,
-                    cb_kwargs={"contest_name": name.strip()}
+                    cb_kwargs={"contest_name": contest_name}
                 )
 
     def parse_contest(self, response, contest_name):
@@ -71,21 +76,36 @@ class CodeforcesGroupSpider(scrapy.Spider):
                 )
 
     def parse_problem(self, response, contest_name):
-        """Parse chi tiết đề bài"""
+        """Parse chi tiết đề bài và xuất ra Markdown"""
         soup = BeautifulSoup(response.text, "html.parser")
         problem_div = soup.select_one(".problemindexholder")
         if not problem_div:
             return
 
-        title = problem_div.select_one(".title").get_text(strip=True)
-        content_html = str(problem_div.select_one(".problem-statement"))
-        content_html = self.clean_html(content_html)
-        markdown = self.html_to_markdown(content_html)
+        title_el = problem_div.select_one(".title")
+        title = title_el.get_text(strip=True) if title_el else "Unknown Problem"
+
+        # Extract time and memory limits
+        time_limit = ""
+        memory_limit = ""
+        info_div = problem_div.select_one(".problem-statement .header")
+        if info_div:
+            for p_tag in info_div.find_all('p', recursive=False):
+                text = p_tag.get_text(strip=True)
+                if "time limit" in text.lower():
+                    time_limit = text.replace("time limit per test", "Time limit:").strip()
+                elif "memory limit" in text.lower():
+                    memory_limit = text.replace("memory limit per test", "Memory limit:").strip()
+
+        markdown = self.html_to_markdown(problem_div, title, time_limit, memory_limit)
 
         # Build file path
         group_folder = f"output/{self.group_id}/{contest_name}"
         os.makedirs(group_folder, exist_ok=True)
-        file_path = os.path.join(group_folder, f"{title}.md")
+        file_name = f"{title}.md"
+        # Sanitize file name
+        file_name = re.sub(r'[\/:*?"<>|]', '', file_name)
+        file_path = os.path.join(group_folder, file_name)
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(markdown)
@@ -94,58 +114,127 @@ class CodeforcesGroupSpider(scrapy.Spider):
 
     # --- Utility ---
 
-    def clean_html(self, html):
-        """Xử lý HTML trước khi convert"""
-        html = re.sub(r'\s+', ' ', html)
-        html = html.replace("<br>", "\n").replace("<br/>", "\n")
-        return html
-
-    def html_to_markdown(self, html):
+    def html_to_markdown(self, problem_div_soup, title, time_limit, memory_limit):
         """Chuyển HTML Codeforces -> Markdown đẹp"""
-        soup = BeautifulSoup(html, "html.parser")
         out = []
 
-        # Tiêu đề và thuộc tính
-        title = soup.select_one(".title")
-        if title:
-            out.append(f"# {title.get_text(strip=True)}\n")
+        # Title
+        out.append(f"# {title}\n")
 
-        def section(title, selector):
-            el = soup.select_one(selector)
-            if el:
-                out.append(f"## {title}\n")
-                out.append(self.extract_text_with_latex(el))
+        # Time and Memory limits
+        if time_limit or memory_limit:
+            out.append(f"**{time_limit}**")
+            out.append(f"**{memory_limit}**\n")
+            out.append("---\n")
 
-        # Phần mô tả
-        section("Problem", ".problem-statement > div:nth-of-type(2)")
-        section("Input", ".input-specification")
-        section("Output", ".output-specification")
+        # Problem Statement
+        problem_statement_div = problem_div_soup.select_one(".problem-statement")
+        if problem_statement_div:
+            # Remove header and title to process the rest of the problem statement
+            if problem_statement_div.select_one(".header"):
+                problem_statement_div.select_one(".header").decompose()
+            
+            # The actual problem content starts after the header
+            problem_content_div = problem_statement_div.find('div', class_=False, recursive=False)
+            if problem_content_div:
+                out.append("## 📖 Problem\n")
+                out.append(self.convert_element_to_markdown(problem_content_div))
+                out.append("\n")
+
+        # Input Specification
+        input_spec = problem_div_soup.select_one(".input-specification")
+        if input_spec:
+            out.append("## 🧩 Input\n")
+            out.append(self.convert_element_to_markdown(input_spec))
+            out.append("\n")
+
+        # Output Specification
+        output_spec = problem_div_soup.select_one(".output-specification")
+        if output_spec:
+            out.append("## 💡 Output\n")
+            out.append(self.convert_element_to_markdown(output_spec))
+            out.append("\n")
 
         # Examples
-        examples = soup.select(".sample-test")
-        if examples:
-            out.append("## Examples\n")
-            for ex in examples:
-                input_block = ex.select_one(".input pre")
-                output_block = ex.select_one(".output pre")
+        sample_tests = problem_div_soup.select(".sample-tests .sample-test")
+        if sample_tests:
+            out.append("## 🧠 Example\n")
+            for i, example in enumerate(sample_tests):
+                input_block = example.select_one(".input pre")
+                output_block = example.select_one(".output pre")
                 if input_block:
-                    out.append("**Input:**")
-                    out.append("```text\n" + input_block.get_text().strip() + "\n```")
+                    out.append("### Input\n")
+                    out.append("```text\n" + input_block.get_text(strip=True) + "\n```\n")
                 if output_block:
-                    out.append("**Output:**")
-                    out.append("```text\n" + output_block.get_text().strip() + "\n```")
-                out.append("")
+                    out.append("### Output\n")
+                    out.append("```text\n" + output_block.get_text(strip=True) + "\n```\n")
+            out.append("\n")
 
-        # Ghi chú
-        note = soup.select_one(".note")
+        # Note
+        note = problem_div_soup.select_one(".note")
         if note:
-            out.append("## Note\n")
-            out.append(self.extract_text_with_latex(note))
+            out.append("## 📝 Note\n")
+            out.append(self.convert_element_to_markdown(note))
+            out.append("\n")
 
         return "\n".join(out)
 
-    def extract_text_with_latex(self, element):
-        """Giữ công thức LaTeX ($...$)"""
-        for tex in element.select(".tex-span"):
-            tex.replace_with(f"${tex.get_text(strip=True)}$")
-        return element.get_text("\n", strip=True)
+    def convert_element_to_markdown(self, element):
+        """Convert a BeautifulSoup element to Markdown, handling LaTeX and images."""
+        
+        # Handle images
+        for img_tag in element.find_all('img'):
+            alt = img_tag.get('alt', '')
+            src = img_tag.get('src', '')
+            if src.startswith("//"):
+                src = "https:" + src # Fix protocol-relative URLs
+            markdown_img = f"![{alt}]({src})"
+            img_tag.replace_with(BeautifulSoup(markdown_img, 'html.parser'))
+
+        # Handle LaTeX
+        for tex_span in element.find_all(class_='tex-span'):
+            tex_content = tex_span.get_text(strip=True)
+            tex_span.replace_with(f"${tex_content}$")
+        
+        # Handle <i>, <sub>, <sup> for mathematical expressions
+        for i_tag in element.find_all('i'):
+            i_content = i_tag.get_text(strip=True)
+            i_tag.replace_with(f"${i_content}$") # Assume <i> mostly for math variables
+
+        for sub_tag in element.find_all('sub'):
+            sub_content = sub_tag.get_text(strip=True)
+            sub_tag.replace_with(f"_{{{sub_content}}}") # _{content} for markdown subscript
+
+        for sup_tag in element.find_all('sup'):
+            sup_content = sup_tag.get_text(strip=True)
+            sup_tag.replace_with(f"^{{{sup_content}}}") # ^{content} for markdown superscript
+
+
+        # Convert remaining HTML to markdown
+        # This is a simplified approach, a full HTML-to-Markdown library would be more robust
+        # but for specific Codeforces HTML, this should be sufficient.
+        
+        # Convert paragraphs
+        for p_tag in element.find_all('p'):
+            p_tag.insert_after('\n\n') # Add newlines after paragraphs
+        
+        # Convert lists
+        for ul_tag in element.find_all('ul'):
+            for li_tag in ul_tag.find_all('li'):
+                li_tag.insert_before('* ')
+                li_tag.insert_after('\n')
+            ul_tag.insert_after('\n')
+        
+        # Convert strong/bold
+        for strong_tag in element.find_all('strong'):
+            strong_tag.insert_before('**')
+            strong_tag.insert_after('**')
+        
+        # Convert code blocks
+        for pre_tag in element.find_all('pre'):
+            pre_tag.insert_before('\n```\n')
+            pre_tag.insert_after('\n```\n')
+
+        # Get text, preserving newlines from original processing
+        # Use .encode and .decode to handle special characters correctly
+        return element.get_text(separator='\n', strip=True)

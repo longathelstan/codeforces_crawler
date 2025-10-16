@@ -22,5 +22,5 @@ class CodeforcesGroupSpider(scrapy.Spider):
         self.group_id = config["group_id"]
 
         self.login_url = "https://codeforces.com/enter"
-        self.start_urls = [f"https://codeforces.com/group/{self.group_id}/contests"]
+        # No need for start_urls here, as start_requests will generate the initial request
 

@@ -1,5 +1,12 @@
 {
   "username": "fexperience",
   "password": "baolam345promaxmicrosoftlord",
-  "group_id": "NLfcjc5iua"
+  "group_id": "NLfcjc5iua",
+  "cookies": {
+    "JSESSIONID": "873826CCDBD9AF5FBAEBAB3BB16EC2F3",
+    "39ce7": "CFkDPx9H",
+    "cf_clearance": "j.52DPMqhzwB4vqXZxcgiutOzn4yfauNmQ9kZ7Fe4aY-1760630401-1.2.1.1-wvpC0wcrmPUbURU.48DpRcX3nmfxOwciQYmaIcjo6XL6FGUYz6SNCMsdDWRuf2eBblvYMDO2X85yYlhvhESuoyyJW4k9h_iYrj4Ecxi1MgDcERIOk9hcsggiPim3RTykTtoLPR0baD0b45lTCbUf5OI6XZu6lUqeJatkt9dKs4QuoK4rRf80HMO6hPqjZ8zbiKjMqVta5V31ChZNoohokJHbRiX_dy01Ngpy3hxtJ.s",
+    "X-User": "020bddc02ce369bd73b90531a44ec0f66fc7ac094acda006d9cb10eb4fc9fe55106e258ea387e0b5",
+    "X-User-Sha1": "412b62249f073772c0426e0b6764d7f5e17671ab"
+  }
 }

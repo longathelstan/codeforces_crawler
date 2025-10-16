@@ -20,35 +20,29 @@ class CodeforcesGroupSpider(scrapy.Spider):
         self.username = config["username"]
         self.password = config["password"]
         self.group_id = config["group_id"]
+        self.cookies = config.get("cookies", {}) # Load cookies from config
 
         self.login_url = "https://codeforces.com/enter"
 
     def start_requests(self):
-        yield scrapy.Request(self.login_url, callback=self.login, dont_filter=True)
-
-    def login(self, response):
-        csrf_token = response.xpath('//meta[@name="X-Csrf-Token"]/@content').get()
-        return scrapy.FormRequest.from_response(
-            response,
-            formdata={
-                'csrf_token': csrf_token,
-                'handleOrEmail': self.username,
-                'password': self.password,
-                '_tta': '176'
-            },
-            callback=self.after_login
+        # Use pre-obtained cookies to directly access the group contests page
+        contests_url = f"https://codeforces.com/group/{self.group_id}/contests"
+        yield scrapy.Request(
+            url=contests_url,
+            cookies=self.cookies, # Pass the loaded cookies
+            callback=self.parse_contests,
+            dont_filter=True # Important to allow re-requesting the same URL if needed
         )
 
-    def after_login(self, response):
-        """Sau khi login thành công -> đến danh sách contest"""
-        if "Invalid handle or password" in response.text:
-            self.logger.error("❌ Login failed")
-            return
-        contests_url = f"https://codeforces.com/group/{self.group_id}/contests"
-        yield scrapy.Request(contests_url, callback=self.parse_contests)
+    # Removed login and after_login methods as they are no longer needed
 
     def parse_contests(self, response):
         """Lấy danh sách contest trong group"""
+        # Check if the response indicates a successful access (not redirected to login or Cloudflare)
+        if "Codeforces" not in response.text and "login" in response.url.lower():
+            self.logger.error("❌ Failed to access group contests page. Cookies might be invalid or expired.")
+            return
+
         for row in response.css(".contests-table tr"):
             link_el = row.css("a::attr(href)").get()
             name_el = row.css("a::text").get()
@@ -68,7 +62,8 @@ class CodeforcesGroupSpider(scrapy.Spider):
                 yield scrapy.Request(
                     contest_url,
                     callback=self.parse_contest,
-                    cb_kwargs={"contest_name": contest_name}
+                    cb_kwargs={"contest_name": contest_name},
+                    cookies=self.cookies # Pass cookies for subsequent requests
                 )
 
     def parse_contest(self, response, contest_name):
@@ -80,7 +75,8 @@ class CodeforcesGroupSpider(scrapy.Spider):
                 yield scrapy.Request(
                     problem_url,
                     callback=self.parse_problem,
-                    cb_kwargs={"contest_name": contest_name}
+                    cb_kwargs={"contest_name": contest_name},
+                    cookies=self.cookies # Pass cookies for subsequent requests
                 )
 
     def parse_problem(self, response, contest_name):
@@ -88,6 +84,7 @@ class CodeforcesGroupSpider(scrapy.Spider):
         soup = BeautifulSoup(response.text, "html.parser")
         problem_div = soup.select_one(".problemindexholder")
         if not problem_div:
+            self.logger.warning(f"⚠️ No problem div found for {response.url}")
             return
 
         title_el = problem_div.select_one(".title")
@@ -98,6 +95,7 @@ class CodeforcesGroupSpider(scrapy.Spider):
         memory_limit = ""
         info_div = problem_div.select_one(".problem-statement .header")
         if info_div:
+            # Find all direct children <p> tags of the header div
             for p_tag in info_div.find_all('p', recursive=False):
                 text = p_tag.get_text(strip=True)
                 if "time limit" in text.lower():
@@ -108,12 +106,18 @@ class CodeforcesGroupSpider(scrapy.Spider):
         markdown = self.html_to_markdown(problem_div, title, time_limit, memory_limit)
 
         # Build file path
-        group_folder = f"output/{self.group_id}/{contest_name}"
+        group_folder = f"output/{self.group_id}"
         os.makedirs(group_folder, exist_ok=True)
+        
+        # Sanitize contest name for folder creation
+        sanitized_contest_name = re.sub(r'[\/:*?"<>|]', '', contest_name)
+        contest_output_folder = os.path.join(group_folder, sanitized_contest_name)
+        os.makedirs(contest_output_folder, exist_ok=True)
+
         file_name = f"{title}.md"
         # Sanitize file name
         file_name = re.sub(r'[\/:*?"<>|]', '', file_name)
-        file_path = os.path.join(group_folder, file_name)
+        file_path = os.path.join(contest_output_folder, file_name)
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(markdown)
@@ -143,6 +147,7 @@ class CodeforcesGroupSpider(scrapy.Spider):
                 problem_statement_div.select_one(".header").decompose()
             
             # The actual problem content starts after the header
+            # This gets the first div that is not inside the header
             problem_content_div = problem_statement_div.find('div', class_=False, recursive=False)
             if problem_content_div:
                 out.append("## 📖 Problem\n")
